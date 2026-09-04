@@ -199,7 +199,6 @@ RE_BRAND = re.compile(r'"brand"\s*:\s*\{[^}]*?"name"\s*:\s*"((?:[^"\\]|\\.)*)"')
 # Akciotlan termeknel ez a div ures.
 RE_STATT_BLOCK = re.compile(r'class="statt_preis"(.{0,400}?)</div>', re.S)
 RE_STRIKE = re.compile(r"<strike>\s*([0-9.]*[0-9],[0-9]{2})\s*</strike>")
-RE_SAVE = re.compile(r"(\d{1,2})\s*%\s*sparen", re.I)
 # suly a JSON-LD leirasbol: "Gewicht: 43 g" / "Gewicht: 1,2 kg"
 RE_WEIGHT = re.compile(r"Gewicht[:\s]*(?:ca\.\s*)?([0-9]+(?:[.,][0-9]+)?)\s*(kg|g)\b", re.I)
 
@@ -256,6 +255,14 @@ def parse_product(sku, url):
         img = RE_IMG.search(seg).group(1)
     elif RE_IMG1.search(seg):
         img = RE_IMG1.search(seg).group(1)
+    # A forras nehany terméknel hibas kepURL-t ad ("https:https://..."), javitjuk
+    if img:
+        img = img.strip()
+        img = re.sub(r"^https?:(?=https?://)", "", img)
+        if img.startswith("//"):
+            img = "https:" + img
+        elif img.startswith("/"):
+            img = BASE + img
 
     in_stock = None
     if avail_raw:
@@ -272,13 +279,6 @@ def parse_product(sku, url):
         ms = RE_STRIKE.search(blk.group(1))
         if ms:
             lista = _num(ms.group(1))
-    save = None
-    msv = RE_SAVE.search(html)
-    if msv:
-        try:
-            save = int(msv.group(1))
-        except ValueError:
-            save = None
 
     # suly a leirasbol (best effort), kg-ban normalizalva
     suly = None
@@ -288,15 +288,25 @@ def parse_product(sku, url):
         if val is not None:
             suly = round(val / 1000.0, 4) if mw.group(2).lower() == "g" else round(val, 4)
 
-    if lista and price and lista > price:
-        akcios = True
-        if save is None:
-            save = int(round((lista - price) / lista * 100))
-    elif save:
-        akcios = True
-    else:
-        akcios = False
-        if lista and price and lista <= price:
+    # A "% sparen" szoveg a lapon mas (ajanlott) termekhez is tartozhat, ezert
+    # CSAK a sajat listaarbol szamolt kedvezmenyben bizunk. Ha nincs listaar,
+    # a kedvezmeny is ures marad, mert kulonben rossz szazalekot irnank ki.
+    save = None
+    akcios = False
+    if lista is not None and price is not None:
+        if lista > price:
+            pct = int(round((lista - price) / lista * 100))
+            # Vedelem a hibas parositas ellen: a Pearl neha tobbdarabos csomag
+            # osszegzett arat vagy egy szomszedos termek arat teszi a statt
+            # blokkba. 95%-nal nagyobb "kedvezmeny" szinte biztosan hibas parositas,
+            # ilyenkor inkabb ures listaarat adunk, mint hamis kedvezmenyt.
+            if pct <= 95:
+                akcios = True
+                save = pct
+            else:
+                lista = None
+        else:
+            # a forras neha hibas/idegen listaarat mutat (kisebb, mint az ar)
             lista = None
 
     return {
