@@ -1,0 +1,21 @@
+name: probe
+on:
+  workflow_dispatch:
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probe pearl.de reachability
+        run: |
+          echo "Runner egress IP: $(curl -s -m 10 https://api.ipify.org || echo unknown)"
+          echo "=== DNS"; getent hosts www.pearl.de || true
+          for target in "https://www.pearl.de/robots.txt" "https://www.pearl.de/a-NC9540-4221.shtml" "https://www.pearl.de/sitemapindex.xml"; do
+            echo "--- $target"
+            code=$(curl -sS -m 25 -o /tmp/out.html -w "%{http_code}" \
+              -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36" \
+              -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" \
+              -H "Accept-Language: de-DE,de;q=0.9" \
+              "$target" 2>&1 || echo "CURLFAIL")
+            echo "code=$code size=$(wc -c < /tmp/out.html 2>/dev/null || echo 0)"
+            grep -o 'application/ld+json' /tmp/out.html | head -1 || true
+          done
