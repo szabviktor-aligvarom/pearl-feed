@@ -1,0 +1,92 @@
+name: watchdog
+
+# Ez a figyelo NEM a Windows gepen fut, hanem a GitHubon.
+# Ezert akkor is kuld emailt, ha a gep teljesen le van allva -
+# egy leallt gep sajat magarol nem tudna ertesitest kuldeni.
+#
+# Logika: a sikeres futas mindig frissiti a feed/heartbeat.json-t.
+# A feed 3 naponta frissul, ezert ha a heartbeat 4 napnal regebbi,
+# akkor kimaradt egy futas -> ertesites.
+
+on:
+  schedule:
+    - cron: "0 7 * * *"     # naponta 09:00 budapesti ido (UTC+2)
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Heartbeat ellenorzese
+        id: check
+        run: |
+          python3 - <<'PY' >> $GITHUB_OUTPUT
+          import json, os, datetime, sys
+
+          MAX_AGE_HOURS = 24 * 4   # 3 naponta futunk, 4 nap utan mar biztosan kimaradt
+
+          try:
+              with open("feed/heartbeat.json", encoding="utf-8") as f:
+                  hb = json.load(f)
+              last = hb.get("utolso_sikeres_futas")
+              gep = hb.get("gep", "ismeretlen")
+              dt = datetime.datetime.strptime(last, "%Y-%m-%d %H:%M:%S")
+              # a heartbeat budapesti idoben keszul
+              dt = dt.replace(tzinfo=datetime.timezone(datetime.timedelta(hours=2)))
+              now = datetime.datetime.now(datetime.timezone.utc)
+              age_h = (now - dt).total_seconds() / 3600
+              stale = age_h > MAX_AGE_HOURS
+              print(f"stale={'true' if stale else 'false'}")
+              print(f"age_hours={age_h:.1f}")
+              print(f"last_run={last}")
+              print(f"machine={gep}")
+              print(f"age_days={age_h/24:.1f}")
+          except FileNotFoundError:
+              print("stale=unknown")
+              print("age_hours=0")
+              print("last_run=nincs heartbeat fajl")
+              print("machine=?")
+              print("age_days=0")
+          PY
+
+      - name: Feed frissesseg kiirasa
+        run: |
+          echo "Utolso sikeres futas: ${{ steps.check.outputs.last_run }}"
+          echo "Ennyi ido telt el: ${{ steps.check.outputs.age_days }} nap"
+          echo "Elavult: ${{ steps.check.outputs.stale }}"
+
+      - name: Ertesito email, ha kimaradt a futas
+        if: steps.check.outputs.stale == 'true' || steps.check.outputs.stale == 'unknown'
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 587
+          secure: false
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          from: pearl-feed watchdog <${{ secrets.MAIL_USERNAME }}>
+          to: ${{ secrets.MAIL_TO }}
+          subject: "[pearl-feed] A feed nem frissult - valoszinuleg leallt a gep"
+          body: |
+            A pearl.de feed nem frissult idoben.
+
+            Utolso sikeres futas: ${{ steps.check.outputs.last_run }}
+            Ez ${{ steps.check.outputs.age_days }} nappal ezelott volt.
+            Gep: ${{ steps.check.outputs.machine }}
+
+            VALOSZINU OK: a feedet epito Windows gep le van allva,
+            vagy nem futott le az utemezett feladat.
+
+            MIT KELL TENNI:
+            1. Kapcsold be / inditsd ujra a gepet.
+            2. A feladat a kovetkezo utemezett idopontban (22:00) automatikusan lefut.
+               Ha azonnal kell, inditsd kezzel: a Task Scheduler-ben
+               a "Pearl feed frissites" feladatnal jobb klikk -> Run.
+
+            FONTOS: az utolso jo feed valtozatlanul kint van az allando linken,
+            tehat a shop most is ervenyes adatot lat, csak nem a legfrissebbet.
+
+            Feed link:
+            https://raw.githubusercontent.com/${{ github.repository }}/main/feed/pearl_feed.json
